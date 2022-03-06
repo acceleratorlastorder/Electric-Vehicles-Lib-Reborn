@@ -75,13 +75,13 @@ local regen_brake_for_unit = { }
 -- Remember entities which were invalid in on_load to remove in the first on_tick
 local invalid_entities = { }
 
-function rebuild_caches()
+function ev_rebuild_caches()
   equipment_cache = { }
   transformer_for_unit = { }
   regen_brake_for_unit = { }
   
-  for unit, entity in pairs(global.vehicles) do
-    if(entity.valid) then
+  for unit, entity in pairs(global.e_vehicles) do
+    if(entity and entity.valid) then
       local grid = entity.grid
       if(grid and grid.valid) then
         cache_equipment(unit, read_equipment(unit, grid))
@@ -94,7 +94,7 @@ function rebuild_caches()
   end
 end
 
-function validate_prototypes()
+function ev_validate_prototypes()
   -- Stop doing anything involving a no longer present prototypes
   local equipment = game.equipment_prototypes
   local entities = game.entity_prototypes
@@ -108,11 +108,11 @@ function validate_prototypes()
   end
 end
 
-function validate_entities()
+function ev_validate_entities()
   -- If any units were deleted stop processing them
-  for unit, entity in pairs(global.vehicles) do
-    if(not entity.valid or not entity.grid) then
-      global.vehicles[unit] = nil
+  for unit, entity in pairs(global.e_vehicles) do
+    if(not entity or not entity.valid or not entity.grid) then
+      global.e_vehicles[unit] = nil
     else
       -- In case equipment was deleted
       update_equipment(unit, entity.grid)
@@ -121,7 +121,7 @@ function validate_entities()
   -- Stop regeneration on deleted vehicles and trains
   for _, tbl in pairs{global.braking_vehicles, global.braking_trains} do
     for i, data in pairs(tbl) do
-      if(not tbl[i][1].valid) then
+      if(not tbl[i][1] or not tbl[i][1].valid) then
         tbl[i] = nil
       end
     end
@@ -160,7 +160,7 @@ end
 function update_equipment(unit, grid)
   local transformers, brakes = read_equipment(unit, grid)
   
-  local entity = global.vehicles[unit]
+  local entity = global.e_vehicles[unit]
   local had_brake = regen_brake_for_unit[unit] ~= nil
   cache_equipment(unit, transformers, brakes)
 
@@ -183,16 +183,23 @@ end
 -------------------------------------------------------------------------------
 
 fuel_tick = function()
-  local vehicles = global.vehicles
+  if not global.ev_effectivity then
+  	global.ev_effectivity = {}
+  end
+  local vehicles = global.e_vehicles
   for unit, transformer in pairs(transformer_for_unit) do
     local entity = vehicles[unit]
-    if(entity.valid) then
+    if(entity and entity.valid) then
+	  if not global.ev_effectivity[entity.name] then
+		global.ev_effectivity[entity.name] = entity.prototype.burner_prototype.effectivity or 1
+	  end
+	  local effectivity = global.ev_effectivity[entity.name]
       local available_energy = transformer.energy
       local current_energy = entity.energy
-      entity.energy = current_energy + available_energy
+      entity.energy = current_energy + available_energy*effectivity
       -- The burner energy buffer is kinda weird so we have to check how much energy we actually inserted
       local used = entity.energy - current_energy
-      transformer.energy = available_energy - used
+      transformer.energy = available_energy - used/effectivity
     else
       vehicles[unit] = nil
       transformer_for_unit[unit] = nil
@@ -206,7 +213,7 @@ recover_energy = function()
   local brakes = global.brakes
   for _, data in pairs(global.braking_trains) do
     local train = data[1]
-    if(train.valid) then
+    if(train and train.valid) then
       local previous_speed = data[2]
       local mass = data[3]
       local speed = train.speed * 60 -- convert m/tick to m/s
@@ -234,7 +241,7 @@ recover_energy = function()
   end
   for unit, data in pairs(global.braking_vehicles) do
     local entity = data[1]
-    if(entity.valid) then
+    if(entity and entity.valid) then
       local brake = regen_brake_for_unit[unit]
       local mass = data[3]
       if(brake) then
@@ -249,7 +256,7 @@ recover_energy = function()
         data[2] = abs_speed
       end
     else
-      global.vehicles[unit] = nil
+      global.e_vehicles[unit] = nil
       global.braking_vehicles[unit] = nil
       transformer_for_unit[unit] = nil
       regen_brake_for_unit[unit] = nil
@@ -326,7 +333,7 @@ on_entity_removed = function(entity)
   end
   if(vehicle_types[entity.type]) then
     local unit = entity.unit_number
-    global.vehicles[unit] = nil
+    global.e_vehicles[unit] = nil
     global.braking_vehicles[unit] = nil
     transformer_for_unit[unit] = nil
     regen_brake_for_unit[unit] = nil
@@ -339,24 +346,24 @@ end
 function on_built_entity(event)
   local entity = event.created_entity
   if(vehicle_types[entity.type] and entity.grid) then
-    global.vehicles[entity.unit_number] = entity
+    global.e_vehicles[entity.unit_number] = entity
     update_equipment(entity.unit_number, entity.grid)
   end
 end
 
-function on_entity_died(event)
+function ev_on_entity_died(event)
   on_entity_removed(event.entity)
 end
 
-function on_player_placed_equipment(event)
-  for unit, entity in pairs(global.vehicles) do
-    if(entity.valid) then
+function ev_on_player_placed_equipment(event)
+  for unit, entity in pairs(global.e_vehicles) do
+    if(entity and entity.valid) then
       if(entity.grid == event.grid) then
         update_equipment(unit, event.grid)
         break
       end
     else
-      global.vehicles[unit] = nil
+      global.e_vehicles[unit] = nil
       global.braking_vehicles[unit] = nil
       transformer_for_unit[unit] = nil
       regen_brake_for_unit[unit] = nil
@@ -364,15 +371,15 @@ function on_player_placed_equipment(event)
   end
 end
 
-function on_player_removed_equipment(event)
-  for unit, entity in pairs(global.vehicles) do
-    if(entity.valid) then
+function ev_on_player_removed_equipment(event)
+  for unit, entity in pairs(global.e_vehicles) do
+    if(entity and entity.valid) then
       if(entity.grid == event.grid) then
         update_equipment(unit, event.grid)
         break
       end
     else
-      global.vehicles[unit] = nil
+      global.e_vehicles[unit] = nil
       global.braking_vehicles[unit] = nil
       transformer_for_unit[unit] = nil
       regen_brake_for_unit[unit] = nil
@@ -384,22 +391,22 @@ function on_preplayer_mined_item(event)
   on_entity_removed(event.entity)
 end
 
-function on_robot_pre_mined(event)
+function ev_on_robot_pre_mined(event)
   on_entity_removed(event.entity)
 end
 
-function on_tick(event)
+function ev_on_tick(event)
   function real_on_tick(event)
     fuel_tick()
     recover_energy()
   end
   
   for _, unit in pairs(invalid_entities) do
-    global.vehicles[unit] = nil
+    global.e_vehicles[unit] = nil
     global.braking_vehicles[unit] = nil
   end
   for index, data in pairs(global.braking_trains) do
-    if(not data[1].valid) then
+    if(not  data[1] or not data[1].valid) then
       global.braking_trains[index] = nil
     end
   end
@@ -408,7 +415,7 @@ function on_tick(event)
   real_on_tick(event)
 end
 
-function on_train_changed_state(event)
+function ev_on_train_changed_state(event)
   handle_train_state_change(event.train)
 end
 
